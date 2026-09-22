@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>E-ink Board</title>
+<style>
+  :root {
+    --bg: #f5f5f4; --card: #fff; --ink: #1c1917; --muted: #78716c;
+    --line: #e7e5e4; --accent: #dc2626; --ok: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1c1917; --card: #292524; --ink: #f5f5f4; --muted: #a8a29e; --line: #44403c; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; padding: 16px; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  button {
+    width: 100%; padding: 15px; font-size: 17px; font-weight: 600;
+    border: 0; border-radius: 12px; background: var(--ink); color: var(--bg);
+    margin-bottom: 8px; cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--ink); border: 1.5px solid var(--line); }
+  button:disabled { opacity: .4; }
+  #status { font-size: 14px; color: var(--muted); }
+  #status.on { color: var(--ok); font-weight: 600; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 14px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+  canvas { width: 100%; image-rendering: pixelated; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  #log {
+    font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap;
+    max-height: 190px; overflow-y: auto; color: var(--muted);
+  }
+  .warn { background: #fef3c7; color: #78350f; border-radius: 10px; padding: 10px 12px; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>E-ink Board</h1>
+<div class="sub">Điều khiển màn e-ink 2.9" qua Bluetooth</div>
+
+<div id="unsupported" class="card warn" hidden>
+  Trình duyệt này không hỗ trợ Web Bluetooth. Trên iPhone hãy mở bằng
+  <b>Bluefy</b>; trên máy tính dùng Chrome hoặc Edge.
+</div>
+
+<div class="card">
+  <button id="btnConnect">Kết nối</button>
+  <div id="status">Chưa kết nối</div>
+</div>
+
+<div class="card" id="infoCard" hidden>
+  <dl>
+    <dt>Thiết bị</dt><dd id="iName">–</dd>
+    <dt>Firmware</dt><dd id="iVer">–</dd>
+    <dt>MTU</dt><dd id="iMtu">–</dd>
+    <dt>Config</dt><dd id="iCfg">–</dd>
+  </dl>
+</div>
+
+<div class="card">
+  <div class="sub" style="margin:0 0 8px">Xem trước (đúng những gì màn sẽ hiện)</div>
+  <canvas id="preview" width="296" height="138"></canvas>
+</div>
+
+<div class="card">
+  <button id="btnTest" disabled>Gửi ảnh thử</button>
+  <button id="btnClear" class="secondary" disabled>Xoá trắng</button>
+</div>
+
+<div class="card"><div id="log"></div></div>
+
+<script>
+// ---------------------------------------------------------------- panel spec
+// Measured on the real hardware, not assumed - see host/README.md.
+const PANEL = {
+  W: 296,        // landscape width  = gate lines
+  H: 138,        // landscape height = source lines actually visible
+  RAM_W: 144,    // rounded up to a byte; the spare columns stay white
+  RAM_H: 296,
+  TOP_MARGIN: 5, // the plastic case hides the first rows of glass
+};
+
+// No names, no calendar ids in here: this repo is public for GitHub Pages, so
+// anything personal lives in the phone's localStorage instead.
+const UUID_SVC  = '62750001-d828-918d-fb46-b6c11c675aec';
+const UUID_CHAR = '62750002-d828-918d-fb46-b6c11c675aec';
+const UUID_VER  = '62750003-d828-918d-fb46-b6c11c675aec';
+
+const CMD = { SET_PINS:0x00, INIT:0x01, CLEAR:0x02, SEND_CMD:0x03, SEND_DATA:0x04,
+              REFRESH:0x05, SLEEP:0x06 };
+
+// SSD16xx registers we drive directly, because the firmware's model table has
+// no entry for a panel this size.
+const SSD = { GDO_CTRL:0x01, SLEEP_MODE:0x10, ENTRY_MODE:0x11, TSENSOR:0x18,
+              WRITE_RAM_BW:0x24, WRITE_RAM_RED:0x26, BORDER:0x3C,
+              RAM_XPOS:0x44, RAM_YPOS:0x45, AUTO_RED:0x46, AUTO_BW:0x47,
+              RAM_XCOUNT:0x4E, RAM_YCOUNT:0x4F };
+const SHIM_MODEL = 0x02;   // any SSD16xx model: we only want its reset + refresh
+const AUTO_WHITE = 0xF7;
+
+// ---------------------------------------------------------------- tiny utils
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function log(msg) {
+  const el = $('log');
+  const t = new Date().toTimeString().slice(0, 8);
+  el.textContent += `${t}  ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ---------------------------------------------------------------- BLE device
+const dev = { device:null, char:null, mtu:20, config:null, version:null, msgs:0 };
+
+async function connect() {
+  dev.device = await navigator.bluetooth.requestDevice({
+    filters: [{ services: [UUID_SVC] }],
+    optionalServices: [UUID_SVC],
+  });
+  dev.device.addEventListener('gattserverdisconnected', onDisconnected);
+  log('Đang kết nối ' + (dev.device.name || '(không tên)'));
+
+  const server = await dev.device.gatt.connect();
+  const svc = await server.getPrimaryService(UUID_SVC);
+  dev.char = await svc.getCharacteristic(UUID_CHAR);
+
+  try {
+    const v = await (await svc.getCharacteristic(UUID_VER)).readValue();
+    dev.version = v.getUint8(0);
+  } catch (e) { log('Không đọc được version: ' + e.message); }
+
+  dev.msgs = 0;
+  await dev.char.startNotifications();
+  dev.char.addEventListener('characteristicvaluechanged', onNotify);
+
+  // The firmware only reports its real MTU in reply to an INIT, and the first
+  // notification after subscribing carries the whole stored config.
+  await write(CMD.INIT, [SHIM_MODEL]);
+  await sleep(600);
+
+  $('iName').textContent = dev.device.name || '(không tên)';
+  $('iVer').textContent  = dev.version != null ? '0x' + dev.version.toString(16) : '–';
+  $('iMtu').textContent  = dev.mtu + ' byte/gói';
+  $('infoCard').hidden = false;
+  setConnected(true);
+}
+
+function onNotify(ev) {
+  const data = new Uint8Array(ev.target.value.buffer);
+  if (dev.msgs++ === 0) {
+    dev.config = data;
+    $('iCfg').textContent = [...data].map(b => b.toString(16).padStart(2, '0')).join('');
+    log('config: ' + $('iCfg').textContent);
+    return;
+  }
+  const msg = new TextDecoder().decode(data);
+  log('← ' + msg);
+  const m = msg.match(/mtu=(\d+)/);
+  if (m) { dev.mtu = parseInt(m[1], 10); $('iMtu').textContent = dev.mtu + ' byte/gói'; }
+}
+
+function onDisconnected() {
+  log('Mất kết nối.');
+  setConnected(false);
+}
+
+function setConnected(on) {
+  $('status').textContent = on ? 'Đã kết nối' : 'Chưa kết nối';
+  $('status').className = on ? 'on' : '';
+  $('btnConnect').textContent = on ? 'Ngắt kết nối' : 'Kết nối';
+  $('btnTest').disabled = !on;
+  $('btnClear').disabled = !on;
+}
+
+async function write(cmd, bytes = []) {
+  const payload = Uint8Array.from([cmd, ...bytes]);
+  // Older Web Bluetooth builds only expose writeValue.
+  if (dev.char.writeValueWithResponse) await dev.char.writeValueWithResponse(payload);
+  else await dev.char.writeValue(payload);
+}
+
+async function epdCmd(reg, ...params) {
+  await write(CMD.SEND_CMD, [reg]);
+  if (params.length) await epdData(Uint8Array.from(params));
+}
+
+async function epdData(bytes) {
+  const chunk = Math.max(1, dev.mtu - 1);
+  for (let i = 0; i < bytes.length; i += chunk) {
+    await write(CMD.SEND_DATA, bytes.subarray(i, i + chunk));
+  }
+}
+
+// ---------------------------------------------------------------- panel ops
+async function clearRam() {
+  // A refresh pushes the WHOLE RAM to the glass, not just the window we wrote,
+  // so anything outside it would still show the firmware's old pixels. These
+  // two commands flood the entire RAM white regardless of its real size.
+  await epdCmd(SSD.AUTO_RED, AUTO_WHITE); await sleep(2000);
+  await epdCmd(SSD.AUTO_BW,  AUTO_WHITE); await sleep(2000);
+}
+
+async function setWindow() {
+  const w = PANEL.RAM_W, h = PANEL.RAM_H;
+  await epdCmd(SSD.GDO_CTRL, (h - 1) & 0xFF, (h - 1) >> 8, 0x00);
+  await epdCmd(SSD.ENTRY_MODE, 0x03);
+  await epdCmd(SSD.RAM_XPOS, 0x00, (w / 8) - 1);
+  await epdCmd(SSD.RAM_YPOS, 0x00, 0x00, (h - 1) & 0xFF, (h - 1) >> 8);
+  await epdCmd(SSD.BORDER, 0x05);
+  await epdCmd(SSD.TSENSOR, 0x80);
+  await epdCmd(SSD.RAM_XCOUNT, 0x00);
+  await epdCmd(SSD.RAM_YCOUNT, 0x00, 0x00);
+}
+
+async function sendPlanes(black, red) {
+  await write(CMD.INIT, [SHIM_MODEL]);   // hardware reset via the firmware
+  await sleep(600);
+  await clearRam();
+  await setWindow();
+
+  await epdCmd(SSD.RAM_XCOUNT, 0x00);
+  await epdCmd(SSD.RAM_YCOUNT, 0x00, 0x00);
+  await epdCmd(SSD.WRITE_RAM_BW);
+  await epdData(black);
+
+  await epdCmd(SSD.RAM_XCOUNT, 0x00);
+  await epdCmd(SSD.RAM_YCOUNT, 0x00, 0x00);
+  await epdCmd(SSD.WRITE_RAM_RED);
+  await epdData(red);
+
+  log('Đang refresh, chờ ~25 giây…');
+  await write(CMD.REFRESH);              // firmware waits on the BUSY pin for us
+  await sleep(25000);
+  await write(CMD.SLEEP);
+  log('Xong.');
+}
+
+// ---------------------------------------------------------------- rendering
+// Canvas antialiases text, and a pinkish blend would be read as red - the bug
+// that used to eat Vietnamese diacritics. Drawing the black and the red parts
+// on separate canvases lets each be thresholded on its own, so no blend of one
+// colour is ever mistaken for the other.
+function planesFromCanvases(blackCanvas, redCanvas) {
+  const rowBytes = PANEL.RAM_W / 8;
+  const black = new Uint8Array(rowBytes * PANEL.RAM_H).fill(0xFF);
+  const red   = new Uint8Array(rowBytes * PANEL.RAM_H).fill(0xFF);
+  const bp = blackCanvas.getContext('2d', { willReadFrequently: true })
+                        .getImageData(0, 0, PANEL.W, PANEL.H).data;
+  const rp = redCanvas.getContext('2d', { willReadFrequently: true })
+                      .getImageData(0, 0, PANEL.W, PANEL.H).data;
+
+  for (let yl = 0; yl < PANEL.H; yl++) {
+    for (let xl = 0; xl < PANEL.W; xl++) {
+      // Landscape (x,y) lands in RAM at (y, W-1-x) - verified against the
+      // Python renderer rather than derived on paper.
+      const xr = yl, yr = PANEL.W - 1 - xl;
+      const idx = yr * rowBytes + (xr >> 3);
+      const mask = 0x80 >> (xr & 7);
+      const p = (yl * PANEL.W + xl) * 4;
+
+      const lumB = 0.299 * bp[p] + 0.587 * bp[p + 1] + 0.114 * bp[p + 2];
+      if (lumB < 140) black[idx] &= ~mask & 0xFF;       // 0 = black
+      const lumR = 0.299 * rp[p] + 0.587 * rp[p + 1] + 0.114 * rp[p + 2];
+      if (lumR < 140) red[idx] &= ~mask & 0xFF;         // 0 = red
+    }
+  }
+  return { black, red };
+}
+
+function newLayer() {
+  const c = document.createElement('canvas');
+  c.width = PANEL.W; c.height = PANEL.H;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, PANEL.W, PANEL.H);
+  g.textBaseline = 'top';
+  return { c, g };
+}
+
+/** Stage 1 test card: proves BLE, addressing, both colour planes and rotation. */
+function drawTestCard() {
+  const B = newLayer(), R = newLayer();
+  const top = PANEL.TOP_MARGIN;
+
+  R.g.fillStyle = '#000';                       // red layer: banner block
+  R.g.fillRect(0, top, PANEL.W, 22);
+  B.g.fillStyle = '#fff';
+  B.g.fillRect(0, top, PANEL.W, 22);            // keep the banner clear of black
+  B.g.font = 'bold 15px -apple-system, sans-serif';
+
+  R.g.fillStyle = '#fff';
+  R.g.font = 'bold 15px -apple-system, sans-serif';
+  R.g.fillText('KIỂM TRA MÀN HÌNH', 8, top + 3);
+
+  B.g.fillStyle = '#000';
+  B.g.font = '15px -apple-system, sans-serif';
+  B.g.fillText('Thể chất · Tiếng Việt ×2', 8, top + 30);
+  B.g.fillText('Kết nối Bluetooth OK', 8, top + 50);
+  B.g.fillText('Chữ có dấu: ạ ệ ộ ờ ắ ể ứ', 8, top + 70);
+
+  R.g.fillStyle = '#000';
+  R.g.font = 'bold 15px -apple-system, sans-serif';
+  R.g.fillText('Phần này màu đỏ', 8, top + 92);
+
+  // Corner ticks: if any is missing, the panel is smaller than PANEL says.
+  B.g.fillStyle = '#000';
+  B.g.fillRect(0, PANEL.H - 3, 40, 3);
+  B.g.fillRect(PANEL.W - 40, PANEL.H - 3, 40, 3);
+  return { B, R };
+}
+
+function paintPreview(B, R) {
+  const p = $('preview').getContext('2d');
+  p.fillStyle = '#fff'; p.fillRect(0, 0, PANEL.W, PANEL.H);
+  const bd = B.g.getImageData(0, 0, PANEL.W, PANEL.H).data;
+  const rd = R.g.getImageData(0, 0, PANEL.W, PANEL.H).data;
+  const out = p.createImageData(PANEL.W, PANEL.H);
+  for (let i = 0; i < PANEL.W * PANEL.H; i++) {
+    const j = i * 4;
+    const lumB = 0.299 * bd[j] + 0.587 * bd[j + 1] + 0.114 * bd[j + 2];
+    const lumR = 0.299 * rd[j] + 0.587 * rd[j + 1] + 0.114 * rd[j + 2];
+    let c = [255, 255, 255];
+    if (lumR < 140) c = [220, 38, 38];
+    else if (lumB < 140) c = [0, 0, 0];
+    out.data[j] = c[0]; out.data[j + 1] = c[1]; out.data[j + 2] = c[2]; out.data[j + 3] = 255;
+  }
+  p.putImageData(out, 0, 0);
+}
+
+// ---------------------------------------------------------------- wiring
+$('btnConnect').onclick = async () => {
+  if (dev.device && dev.device.gatt.connected) { dev.device.gatt.disconnect(); return; }
+  try { await connect(); }
+  catch (e) { log('Lỗi kết nối: ' + e.message); }
+};
+
+$('btnTest').onclick = async () => {
+  const btn = $('btnTest'); btn.disabled = true;
+  try {
+    const { B, R } = drawTestCard();
+    paintPreview(B, R);
+    const { black, red } = planesFromCanvases(B.c, R.c);
+    log(`Gửi ${black.length} byte mỗi plane, ${dev.mtu} byte/gói…`);
+    await sendPlanes(black, red);
+  } catch (e) { log('Lỗi: ' + e.message); }
+  btn.disabled = false;
+};
+
+$('btnClear').onclick = async () => {
+  const btn = $('btnClear'); btn.disabled = true;
+  try {
+    const n = (PANEL.RAM_W / 8) * PANEL.RAM_H;
+    await sendPlanes(new Uint8Array(n).fill(0xFF), new Uint8Array(n).fill(0xFF));
+  } catch (e) { log('Lỗi: ' + e.message); }
+  btn.disabled = false;
+};
+
+if (!navigator.bluetooth) $('unsupported').hidden = false;
+{ const { B, R } = drawTestCard(); paintPreview(B, R); }
+log('Sẵn sàng. Bấm Kết nối.');
+</script>
+</body>
+</html>
