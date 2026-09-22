@@ -93,6 +93,7 @@
 <script>
 // No names, no calendar ids in here: this repo is public for GitHub Pages, so
 // anything personal lives in the phone's localStorage instead.
+const NAME_PREFIX = 'NRF';   // every board of this kind advertises as NRF_EPD_xxxx
 const UUID_SVC  = '62750001-d828-918d-fb46-b6c11c675aec';
 const UUID_CHAR = '62750002-d828-918d-fb46-b6c11c675aec';
 const UUID_VER  = '62750003-d828-918d-fb46-b6c11c675aec';
@@ -121,13 +122,18 @@ function log(msg) {
 const dev = { device:null, char:null, mtu:20, msgs:0, version:null };
 
 async function connect() {
+  // Filter by name, not by service uuid: with more than one board around, the
+  // chooser should list them all so you can pick. The service still has to be
+  // declared optional or we would not be allowed to reach it after connecting.
   dev.device = await navigator.bluetooth.requestDevice({
-    filters: [{ services: [UUID_SVC] }], optionalServices: [UUID_SVC],
+    filters: [{ namePrefix: NAME_PREFIX }], optionalServices: [UUID_SVC],
   });
   dev.device.addEventListener('gattserverdisconnected', () => {
     log('Mất kết nối.'); setConnected(false);
   });
-  log('Đang kết nối ' + (dev.device.name || '(không tên)'));
+  const name = dev.device.name || '(không tên)';
+  log('Đang kết nối ' + name);
+  localStorage.setItem(lastDeviceKey, name);
 
   const svc = await (await dev.device.gatt.connect()).getPrimaryService(UUID_SVC);
   dev.char = await svc.getCharacteristic(UUID_CHAR);
@@ -219,6 +225,7 @@ async function sendPlanes(black, red) {
 
 // ---------------------------------------------------------------- UI wiring
 const ownerKey = 'eink.owner';
+const lastDeviceKey = 'eink.lastDevice';
 let current = null;
 
 function render() {
@@ -258,6 +265,8 @@ $('btnClear').onclick = async () => {
 };
 
 if (!navigator.bluetooth) $('unsupported').hidden = false;
+const lastDevice = localStorage.getItem(lastDeviceKey);
+if (lastDevice) log('Lần trước dùng: ' + lastDevice);
 
 // The pixel font must be loaded before anything is measured: falling back to a
 // system face would give different ink boxes and a different layout.
