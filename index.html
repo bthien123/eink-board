@@ -82,8 +82,15 @@
   </div>
   <div id="gIn" hidden>
     <div id="gStatus" class="sub" style="margin:0 0 4px"></div>
-    <label for="calSel">Lịch</label>
-    <select id="calSel"></select>
+    <div id="calFixed" hidden>
+      <label>Lịch</label>
+      <div id="calName" style="font-weight:600"></div>
+      <button id="btnChangeCal" class="secondary" style="margin-top:10px">Đổi lịch</button>
+    </div>
+    <div id="calPick" hidden>
+      <label for="calSel">Chọn lịch</label>
+      <select id="calSel"></select>
+    </div>
     <button id="btnSignOut" class="secondary" style="margin-top:10px">Đăng xuất</button>
   </div>
 </div>
@@ -283,6 +290,17 @@ function refreshAuthUi() {
   if (on) $('gStatus').textContent = 'Đã đăng nhập.';
 }
 
+/** Once a calendar has been chosen, show only that one - the others are noise.
+ *  The name is read from the account at runtime, never stored in this public
+ *  repo. */
+function showCalendar(picking) {
+  const sel = $('calSel');
+  const chosen = sel.options.length && sel.selectedIndex >= 0;
+  $('calPick').hidden = !(picking || !chosen);
+  $('calFixed').hidden = !!(picking || !chosen);
+  if (chosen) $('calName').textContent = sel.options[sel.selectedIndex].textContent;
+}
+
 /** Fill the calendar picker from the account itself, so nobody has to type a
  *  name exactly right - and a renamed calendar keeps working, since what gets
  *  stored is the id. */
@@ -295,6 +313,7 @@ async function loadCalendars() {
       .map(c => `<option value="${c.id}">${c.summary || c.id}</option>`).join('');
     if (saved && all.some(c => c.id === saved)) $('calSel').value = saved;
     else localStorage.setItem(calIdKey, $('calSel').value);
+    showCalendar();
     log(`Tìm thấy ${all.length} lịch.`);
   } catch (e) {
     log('Không lấy được danh sách lịch: ' + e.message);
@@ -320,7 +339,12 @@ $('daySel').onchange = render;
 $('btnReload').onclick = render;
 $('owner').oninput = () => { localStorage.setItem(ownerKey, $('owner').value); if (lastDay) paint(lastDay); };
 $('clientId').oninput = () => localStorage.setItem(clientIdKey, $('clientId').value.trim());
-$('calSel').onchange = () => { localStorage.setItem(calIdKey, $('calSel').value); render(); };
+$('calSel').onchange = () => {
+  localStorage.setItem(calIdKey, $('calSel').value);
+  showCalendar();
+  render();
+};
+$('btnChangeCal').onclick = () => showCalendar(true);
 
 $('btnSignIn').onclick = () => {
   const id = $('clientId').value.trim();
@@ -330,6 +354,8 @@ $('btnSignIn').onclick = () => {
 $('btnSignOut').onclick = () => {
   GCAL.signOut();
   $('calSel').innerHTML = '';
+  $('calFixed').hidden = true;
+  $('calPick').hidden = true;
   refreshAuthUi();
   log('Đã đăng xuất.');
   render();
