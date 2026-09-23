@@ -48,5 +48,7 @@ ngoài cửa sổ sẽ hiện lại ảnh cũ của firmware.
 - [x] Bố cục thời khoá biểu
 - [x] Đọc Google Calendar ngay trong trình duyệt
 
+Chọn được hôm nay và 5 ngày kế tiếp.
+
 Phần dựng ảnh đã được đối chiếu **khớp từng bit** với bộ render Python trong
 `host/` — bộ đã chạy thật trên phần cứng.

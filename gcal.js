@@ -46,7 +46,10 @@ const GCAL = (() => {
     } catch { return null; }
   }
 
-  function signOut() { localStorage.removeItem(KEY_TOKEN); }
+  function signOut() {
+    localStorage.removeItem(KEY_TOKEN);
+    localStorage.removeItem(KEY_CAL_ID);   // don't keep another account's calendar
+  }
 
   /** Pick the token out of the URL fragment after Google redirects back. */
   function captureRedirect() {
@@ -98,11 +101,23 @@ const GCAL = (() => {
     return out;
   }
 
+  const KEY_CAL_ID = 'eink.calId';
+
+  /** Resolve a calendar name to its id, remembering the answer.
+   *
+   *  Without this, every day change re-listed the whole calendar list just to
+   *  look up an id that never changes. */
   async function findCalendarId(name) {
-    const all = await listCalendars();
     const want = name.trim().toLowerCase();
+    try {
+      const cached = JSON.parse(localStorage.getItem(KEY_CAL_ID) || 'null');
+      if (cached && cached.name === want) return cached.id;
+    } catch { /* fall through and look it up */ }
+
+    const all = await listCalendars();
     const hit = all.find(c => (c.summary || '').trim().toLowerCase() === want);
     if (!hit) throw new Error(`Không thấy lịch "${name}". Có: ${all.map(c => c.summary).join(', ')}`);
+    localStorage.setItem(KEY_CAL_ID, JSON.stringify({ name: want, id: hit.id }));
     return hit.id;
   }
 
@@ -159,6 +174,14 @@ const GCAL = (() => {
 
   // buildDay is exported so the parsing can be tested without the network -
   // it is the part most likely to drift from the Python original.
+  const weekdayVi = d => WEEKDAY_VI[d.getDay()];
+  const dayLabel = d =>
+    `${WEEKDAY_VI[d.getDay()]} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+
+  /** An empty day for a date, so the preview can show something real before
+   *  anyone has signed in. */
+  const blankDay = d => buildDay([], d);
+
   return { signIn, signOut, currentToken, captureRedirect, listCalendars,
-           loadDay, buildDay, redirectUri };
+           loadDay, buildDay, blankDay, dayLabel, weekdayVi, redirectUri };
 })();

@@ -105,7 +105,6 @@
 
 <div class="card"><div id="log"></div></div>
 
-<script src="sample.js"></script>
 <script src="layout.js"></script>
 <script src="gcal.js"></script>
 <script>
@@ -259,23 +258,22 @@ function paint(day) {
 /** Redraw from whatever the day selector points at: a live Google day, or one
  *  of the bundled samples so the layout can be checked without signing in. */
 async function render() {
-  const v = $('daySel').value;
-  if (v === 'today' || v === 'tomorrow') {
-    const d = new Date();
-    if (v === 'tomorrow') d.setDate(d.getDate() + 1);
-    try {
-      log('Đang đọc lịch…');
-      const day = await GCAL.loadDay($('calName').value.trim(), d);
-      log(`${day.weekday_vi} ${day.date}: ${day.morning.length} tiết sáng, `
-        + `${day.afternoon.length} tiết chiều, ${day.items.length} việc`);
-      paint(day);
-    } catch (e) {
-      log('Lỗi đọc lịch: ' + e.message);
-      refreshAuthUi();
-    }
+  const date = dayOptions[+$('daySel').value];
+  if (!GCAL.currentToken() || !$('calName').value.trim()) {
+    paint(GCAL.blankDay(date));       // real date, no data yet
     return;
   }
-  paint(SAMPLE_WEEK[+v]);
+  try {
+    log('Đang đọc lịch…');
+    const day = await GCAL.loadDay($('calName').value.trim(), date);
+    log(`${day.weekday_vi} ${day.date}: ${day.morning.length} tiết sáng, `
+      + `${day.afternoon.length} tiết chiều, ${day.items.length} việc`);
+    paint(day);
+  } catch (e) {
+    log('Lỗi đọc lịch: ' + e.message);
+    paint(GCAL.blankDay(date));
+    refreshAuthUi();
+  }
 }
 
 function refreshAuthUi() {
@@ -285,11 +283,16 @@ function refreshAuthUi() {
   if (on) $('gStatus').textContent = 'Đã đăng nhập. Lịch: ' + ($('calName').value.trim() || '(chưa đặt)');
 }
 
-$('daySel').innerHTML =
-  '<option value="tomorrow">Ngày mai</option><option value="today">Hôm nay</option>'
-  + '<optgroup label="Dữ liệu mẫu">'
-  + SAMPLE_WEEK.map((d, i) => `<option value="${i}">${d.weekday_vi} ${d.date}</option>`).join('')
-  + '</optgroup>';
+// Today plus the next five days: far enough to set the board up before a trip,
+// short enough that the list stays one glance.
+const DAYS_AHEAD = 6;
+const dayOptions = Array.from({ length: DAYS_AHEAD }, (_, i) => {
+  const d = new Date(); d.setDate(d.getDate() + i); d.setHours(0, 0, 0, 0);
+  return d;
+});
+$('daySel').innerHTML = dayOptions
+  .map((d, i) => `<option value="${i}">${i === 0 ? 'Hôm nay — ' : i === 1 ? 'Ngày mai — ' : ''}${GCAL.dayLabel(d)}</option>`)
+  .join('');
 
 $('owner').value = localStorage.getItem(ownerKey) || '';
 $('clientId').value = localStorage.getItem(clientIdKey) || '';
@@ -301,6 +304,7 @@ $('btnReload').onclick = render;
 $('owner').oninput = () => { localStorage.setItem(ownerKey, $('owner').value); if (lastDay) paint(lastDay); };
 $('clientId').oninput = () => localStorage.setItem(clientIdKey, $('clientId').value.trim());
 $('calName').oninput = () => localStorage.setItem(calNameKey, $('calName').value.trim());
+$('calName').onchange = render;
 
 $('btnSignIn').onclick = () => {
   const id = $('clientId').value.trim();
@@ -350,8 +354,7 @@ Promise.all([
   else if (redirect) log('Đăng nhập Google xong.');
   refreshAuthUi();
   // Only reach for the network when there is a token and a calendar to ask for.
-  if (GCAL.currentToken() && $('calName').value.trim()) await render();
-  else paint(SAMPLE_WEEK[0]);
+  await render();
 }).catch(e => log('Không tải được font: ' + e.message));
 </script>
 </body>
