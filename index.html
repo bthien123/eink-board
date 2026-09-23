@@ -375,7 +375,7 @@ Promise.all([
   if (redirect && redirect.error) log('Đăng nhập lỗi: ' + redirect.error);
   else if (redirect) log('Đăng nhập Google xong.');
   refreshAuthUi();
-  // Only reach for the network when there is a token and a calendar to ask for.
+  await loadCalendars();   // must run before render(), which needs a calendar id
   await render();
 }).catch(e => log('Không tải được font: ' + e.message));
 </script>
