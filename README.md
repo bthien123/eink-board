@@ -46,7 +46,7 @@ ngoài cửa sổ sẽ hiện lại ảnh cũ của firmware.
 - [x] Kết nối BLE, đọc cấu hình và MTU
 - [x] Dựng ảnh trên canvas, đóng gói hai plane, gửi xuống màn
 - [x] Bố cục thời khoá biểu
-- [ ] Đọc Google Calendar ngay trong trình duyệt
+- [x] Đọc Google Calendar ngay trong trình duyệt
 
 Phần dựng ảnh đã được đối chiếu **khớp từng bit** với bộ render Python trong
 `host/` — bộ đã chạy thật trên phần cứng.
