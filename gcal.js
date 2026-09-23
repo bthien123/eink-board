@@ -46,10 +46,7 @@ const GCAL = (() => {
     } catch { return null; }
   }
 
-  function signOut() {
-    localStorage.removeItem(KEY_TOKEN);
-    localStorage.removeItem(KEY_CAL_ID);   // don't keep another account's calendar
-  }
+  function signOut() { localStorage.removeItem(KEY_TOKEN); }
 
   /** Pick the token out of the URL fragment after Google redirects back. */
   function captureRedirect() {
@@ -101,26 +98,6 @@ const GCAL = (() => {
     return out;
   }
 
-  const KEY_CAL_ID = 'eink.calId';
-
-  /** Resolve a calendar name to its id, remembering the answer.
-   *
-   *  Without this, every day change re-listed the whole calendar list just to
-   *  look up an id that never changes. */
-  async function findCalendarId(name) {
-    const want = name.trim().toLowerCase();
-    try {
-      const cached = JSON.parse(localStorage.getItem(KEY_CAL_ID) || 'null');
-      if (cached && cached.name === want) return cached.id;
-    } catch { /* fall through and look it up */ }
-
-    const all = await listCalendars();
-    const hit = all.find(c => (c.summary || '').trim().toLowerCase() === want);
-    if (!hit) throw new Error(`Không thấy lịch "${name}". Có: ${all.map(c => c.summary).join(', ')}`);
-    localStorage.setItem(KEY_CAL_ID, JSON.stringify({ name: want, id: hit.id }));
-    return hit.id;
-  }
-
   const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
   async function fetchEvents(calendarId, date) {
@@ -167,9 +144,10 @@ const GCAL = (() => {
     };
   }
 
-  async function loadDay(calendarName, date) {
-    const id = await findCalendarId(calendarName);
-    return buildDay(await fetchEvents(id, date), date);
+  /** Takes a calendar id, not a name: the id is what gets stored, so there is
+   *  nothing to look up and no stale name to resolve. */
+  async function loadDay(calendarId, date) {
+    return buildDay(await fetchEvents(calendarId, date), date);
   }
 
   // buildDay is exported so the parsing can be tested without the network -

@@ -77,14 +77,14 @@
   <div id="gOut">
     <label for="clientId">OAuth Client ID (loại <b>Web application</b>)</label>
     <input id="clientId" placeholder="…apps.googleusercontent.com" autocapitalize="off" spellcheck="false">
-    <label for="calName">Tên lịch cần đọc</label>
-    <input id="calName" placeholder="ví dụ: Bùi Nhật Minh">
     <button id="btnSignIn" style="margin-top:10px">Đăng nhập Google</button>
     <div class="sub" style="margin:0">Địa chỉ cần khai trong Google Cloud:<br><code id="redirUri"></code></div>
   </div>
   <div id="gIn" hidden>
-    <div id="gStatus" class="sub" style="margin:0 0 10px"></div>
-    <button id="btnSignOut" class="secondary">Đăng xuất</button>
+    <div id="gStatus" class="sub" style="margin:0 0 4px"></div>
+    <label for="calSel">Lịch</label>
+    <select id="calSel"></select>
+    <button id="btnSignOut" class="secondary" style="margin-top:10px">Đăng xuất</button>
   </div>
 </div>
 
@@ -244,7 +244,7 @@ async function sendPlanes(black, red) {
 const ownerKey = 'eink.owner';
 const lastDeviceKey = 'eink.lastDevice';
 const clientIdKey = 'eink.clientId';
-const calNameKey = 'eink.calName';
+const calIdKey = 'eink.calId';
 let current = null;
 
 let lastDay = null;
@@ -259,13 +259,13 @@ function paint(day) {
  *  of the bundled samples so the layout can be checked without signing in. */
 async function render() {
   const date = dayOptions[+$('daySel').value];
-  if (!GCAL.currentToken() || !$('calName').value.trim()) {
+  if (!GCAL.currentToken() || !$('calSel').value) {
     paint(GCAL.blankDay(date));       // real date, no data yet
     return;
   }
   try {
     log('Đang đọc lịch…');
-    const day = await GCAL.loadDay($('calName').value.trim(), date);
+    const day = await GCAL.loadDay($('calSel').value, date);
     log(`${day.weekday_vi} ${day.date}: ${day.morning.length} tiết sáng, `
       + `${day.afternoon.length} tiết chiều, ${day.items.length} việc`);
     paint(day);
@@ -280,7 +280,25 @@ function refreshAuthUi() {
   const on = !!GCAL.currentToken();
   $('gIn').hidden = !on;
   $('gOut').hidden = on;
-  if (on) $('gStatus').textContent = 'Đã đăng nhập. Lịch: ' + ($('calName').value.trim() || '(chưa đặt)');
+  if (on) $('gStatus').textContent = 'Đã đăng nhập.';
+}
+
+/** Fill the calendar picker from the account itself, so nobody has to type a
+ *  name exactly right - and a renamed calendar keeps working, since what gets
+ *  stored is the id. */
+async function loadCalendars() {
+  if (!GCAL.currentToken()) return;
+  try {
+    const all = await GCAL.listCalendars();
+    const saved = localStorage.getItem(calIdKey);
+    $('calSel').innerHTML = all
+      .map(c => `<option value="${c.id}">${c.summary || c.id}</option>`).join('');
+    if (saved && all.some(c => c.id === saved)) $('calSel').value = saved;
+    else localStorage.setItem(calIdKey, $('calSel').value);
+    log(`Tìm thấy ${all.length} lịch.`);
+  } catch (e) {
+    log('Không lấy được danh sách lịch: ' + e.message);
+  }
 }
 
 // Today plus the next five days: far enough to set the board up before a trip,
@@ -296,22 +314,26 @@ $('daySel').innerHTML = dayOptions
 
 $('owner').value = localStorage.getItem(ownerKey) || '';
 $('clientId').value = localStorage.getItem(clientIdKey) || '';
-$('calName').value = localStorage.getItem(calNameKey) || '';
 $('redirUri').textContent = GCAL.redirectUri();
 
 $('daySel').onchange = render;
 $('btnReload').onclick = render;
 $('owner').oninput = () => { localStorage.setItem(ownerKey, $('owner').value); if (lastDay) paint(lastDay); };
 $('clientId').oninput = () => localStorage.setItem(clientIdKey, $('clientId').value.trim());
-$('calName').oninput = () => localStorage.setItem(calNameKey, $('calName').value.trim());
-$('calName').onchange = render;
+$('calSel').onchange = () => { localStorage.setItem(calIdKey, $('calSel').value); render(); };
 
 $('btnSignIn').onclick = () => {
   const id = $('clientId').value.trim();
   if (!id) { log('Cần dán OAuth Client ID trước.'); return; }
   GCAL.signIn(id);
 };
-$('btnSignOut').onclick = () => { GCAL.signOut(); refreshAuthUi(); log('Đã đăng xuất.'); };
+$('btnSignOut').onclick = () => {
+  GCAL.signOut();
+  $('calSel').innerHTML = '';
+  refreshAuthUi();
+  log('Đã đăng xuất.');
+  render();
+};
 
 $('btnConnect').onclick = async () => {
   if (dev.device && dev.device.gatt.connected) { dev.device.gatt.disconnect(); return; }
