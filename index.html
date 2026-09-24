@@ -143,7 +143,9 @@ function log(msg) {
 }
 
 // ---------------------------------------------------------------- BLE device
-const dev = { device:null, char:null, mtu:20, msgs:0, version:null };
+const SESSION_MS = 5 * 60 * 1000;   // a link left open drains the tag's battery
+const dev = { device:null, char:null, mtu:20, msgs:0, version:null,
+              timer:null, busy:false, closing:null };
 
 async function connect() {
   // Filter by name, not by service uuid: with more than one board around, the
@@ -153,7 +155,9 @@ async function connect() {
     filters: [{ namePrefix: NAME_PREFIX }], optionalServices: [UUID_SVC],
   });
   dev.device.addEventListener('gattserverdisconnected', () => {
-    log('Mất kết nối.'); setConnected(false);
+    clearTimeout(dev.timer); dev.timer = null; dev.busy = false;
+    log(dev.closing || 'Mất kết nối.'); dev.closing = null;
+    setConnected(false);
   });
   const name = dev.device.name || '(không tên)';
   log('Đang kết nối ' + name);
@@ -178,6 +182,35 @@ async function connect() {
   $('iVer').textContent = dev.version != null ? '0x' + dev.version.toString(16) : '–';
   $('infoCard').hidden = false;
   setConnected(true);
+  armSession();
+}
+
+// A hard cap on how long the radio stays up, not an idle timer: the tag is on a
+// coin cell and the link costs more than a reconnect does.
+function armSession() {
+  clearTimeout(dev.timer);
+  dev.timer = setTimeout(() => {
+    // Never cut a transfer in half - a refresh stopped midway leaves the glass
+    // showing part of the old image. The send hangs up when it finishes.
+    if (dev.busy) { log('Hết 5 phút, sẽ ngắt khi gửi xong.'); return; }
+    disconnect('Hết 5 phút, tự ngắt kết nối.');
+  }, SESSION_MS);
+}
+
+function disconnect(reason) {
+  clearTimeout(dev.timer); dev.timer = null;
+  dev.closing = reason || 'Đã ngắt kết nối.';
+  if (dev.device && dev.device.gatt.connected) dev.device.gatt.disconnect();
+  else { log(dev.closing); dev.closing = null; setConnected(false); }
+}
+
+// Every push ends with the radio off, so nothing is left connected by accident.
+async function withLink(what, fn) {
+  dev.busy = true;
+  $('btnSend').disabled = true; $('btnClear').disabled = true;
+  try { await fn(); } catch (e) { log('Lỗi: ' + e.message); }
+  dev.busy = false;
+  disconnect(what + ' xong, tự ngắt kết nối.');
 }
 
 function onNotify(ev) {
@@ -362,28 +395,20 @@ $('btnSignOut').onclick = () => {
 };
 
 $('btnConnect').onclick = async () => {
-  if (dev.device && dev.device.gatt.connected) { dev.device.gatt.disconnect(); return; }
+  if (dev.device && dev.device.gatt.connected) { disconnect(); return; }
   try { await connect(); } catch (e) { log('Lỗi kết nối: ' + e.message); }
 };
 
-$('btnSend').onclick = async () => {
-  const b = $('btnSend'); b.disabled = true;
-  try {
-    const { black, red } = planesFrom(current.B, current.R);
-    log(`Gửi ${black.length} byte mỗi plane, ${dev.mtu} byte/gói…`);
-    await sendPlanes(black, red);
-  } catch (e) { log('Lỗi: ' + e.message); }
-  b.disabled = false;
-};
+$('btnSend').onclick = () => withLink('Gửi', async () => {
+  const { black, red } = planesFrom(current.B, current.R);
+  log(`Gửi ${black.length} byte mỗi plane, ${dev.mtu} byte/gói…`);
+  await sendPlanes(black, red);
+});
 
-$('btnClear').onclick = async () => {
-  const b = $('btnClear'); b.disabled = true;
-  try {
-    const n = (PANEL.RAM_W / 8) * PANEL.RAM_H;
-    await sendPlanes(new Uint8Array(n).fill(0xFF), new Uint8Array(n).fill(0xFF));
-  } catch (e) { log('Lỗi: ' + e.message); }
-  b.disabled = false;
-};
+$('btnClear').onclick = () => withLink('Xóa', async () => {
+  const n = (PANEL.RAM_W / 8) * PANEL.RAM_H;
+  await sendPlanes(new Uint8Array(n).fill(0xFF), new Uint8Array(n).fill(0xFF));
+});
 
 if (!navigator.bluetooth) $('unsupported').hidden = false;
 const lastDevice = localStorage.getItem(lastDeviceKey);
